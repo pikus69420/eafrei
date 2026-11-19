@@ -1,0 +1,63 @@
+[package]
+name = "eafrei"
+version = "1.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "A web server built in Rust"
+
+[dependencies]
+anyhow = "1"
+arc-swap = "1"
+async-stream = "0.3"
+axum = { version = "0.7.9", default-features = false, features = ["http1", "http2", "tokio"] }
+axum-server = { version = "0.7.3", features = ["tls-rustls-no-provider"] }
+blake3 = "1"
+bytes = "1"
+cap-std = "3.4.6"
+cap-fs-ext = "3.4.6"
+fastcgi-client = { version = "0.12", features = ["tokio"] }
+futures-util = "0.3"
+http-body = "1"
+http-body-util = "0.1"
+httparse = "1"
+mime_guess = "2"
+percent-encoding = "2"
+reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde = { version = "1", features = ["derive"] }
+subtle = "2"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+toml = "0.8"
+
+[profile.release]
+lto = "thin"
+opt-level = 3
+strip = "debuginfo"
+
+[package.metadata.generate-rpm]
+assets = [
+  { source = "target/release/eafrei", dest = "/usr/bin/eafrei", mode = "0755" },
+  { source = "packaging/eafrei.conf", dest = "/etc/eafrei/eafrei.conf", mode = "0644", config = "noreplace" },
+  { source = "public/index.html", dest = "/var/www/eafrei/public/index.html", mode = "0644" },
+  { source = "public/.htaccess", dest = "/var/www/eafrei/public/.htaccess", mode = "0644" },
+]
+
+[package.metadata.deb]
+maintainer = "Antoni Kundera"
+copyright = "2026, Antoni Kundera"
+license-file = ["LICENSE-MIT", "0"]
+depends = "$auto"
+section = "web"
+priority = "optional"
+conf-files = ["/etc/eafrei/eafrei.conf"]
+assets = [
+  ["target/release/eafrei", "usr/bin/eafrei", "755"],
+  ["packaging/eafrei.conf", "etc/eafrei/eafrei.conf", "644"],
+  ["public/index.html", "var/www/eafrei/public/index.html", "644"],
+  ["public/.htaccess", "var/www/eafrei/public/.htaccess", "644"],
+]
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
