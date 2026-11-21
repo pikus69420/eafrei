@@ -16,7 +16,7 @@ target_dir=${CARGO_TARGET_DIR:-target}
 out="$target_dir/$target"
 bin="$out/release/eafrei"
 
-for file in Cargo.toml config/eafrei.conf public/index.html; do
+for file in Cargo.toml config/mail.conf config/php.conf config/web.conf public/index.html; do
     [[ -f "$file" && -r "$file" ]] || die "Missing or unreadable: $file (run this script from the Eafrei source tree)."
 done
 version=$(awk -F"[\"']" '
@@ -37,7 +37,9 @@ trap 'rm -rf -- "$stage"' EXIT
 pkg="$stage/$name"
 mkdir -p -- "$pkg/config" "$pkg/public" "$pkg/certs"
 install -m 0755 -- "$bin" "$pkg/eafrei"
-install -m 0644 -- config/eafrei.conf "$pkg/config/eafrei.conf"
+install -m 0644 -- config/mail.conf "$pkg/config/mail.conf"
+install -m 0644 -- config/php.conf "$pkg/config/php.conf"
+install -m 0644 -- config/web.conf "$pkg/config/web.conf"
 install -m 0644 -- public/index.html "$pkg/public/index.html"
 if [[ -f public/.htaccess ]]; then
     install -m 0644 -- public/.htaccess "$pkg/public/.htaccess"

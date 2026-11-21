@@ -1,6 +1,6 @@
 [package]
 name = "eafrei"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "A web server built in Rust"
@@ -39,7 +39,9 @@ strip = "debuginfo"
 [package.metadata.generate-rpm]
 assets = [
   { source = "target/release/eafrei", dest = "/usr/bin/eafrei", mode = "0755" },
-  { source = "packaging/eafrei.conf", dest = "/etc/eafrei/eafrei.conf", mode = "0644", config = "noreplace" },
+  { source = "packaging/mail.conf", dest = "/etc/eafrei/mail.conf", mode = "0644", config = "noreplace" },
+  { source = "packaging/php.conf", dest = "/etc/eafrei/php.conf", mode = "0644", config = "noreplace" },
+  { source = "packaging/web.conf", dest = "/etc/eafrei/web.conf", mode = "0644", config = "noreplace" },
   { source = "public/index.html", dest = "/var/www/eafrei/public/index.html", mode = "0644" },
   { source = "public/.htaccess", dest = "/var/www/eafrei/public/.htaccess", mode = "0644" },
 ]
@@ -51,10 +53,12 @@ license-file = ["LICENSE-MIT", "0"]
 depends = "$auto"
 section = "web"
 priority = "optional"
-conf-files = ["/etc/eafrei/eafrei.conf"]
+conf-files = ["/etc/eafrei/mail.conf", "/etc/eafrei/php.conf", "/etc/eafrei/web.conf"]
 assets = [
   ["target/release/eafrei", "usr/bin/eafrei", "755"],
-  ["packaging/eafrei.conf", "etc/eafrei/eafrei.conf", "644"],
+  ["packaging/mail.conf", "etc/eafrei/mail.conf", "644"],
+  ["packaging/php.conf", "etc/eafrei/php.conf", "644"],
+  ["packaging/web.conf", "etc/eafrei/web.conf", "644"],
   ["public/index.html", "var/www/eafrei/public/index.html", "644"],
   ["public/.htaccess", "var/www/eafrei/public/.htaccess", "644"],
 ]

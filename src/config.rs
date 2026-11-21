@@ -125,20 +125,172 @@ impl Default for Mail {
     }
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailFile {
+    pub mail: Mail,
+}
+
+fn parse_mail(text: &str) -> std::result::Result<Mail, String> {
+    if let Ok(file) = toml::from_str::<MailFile>(text) {
+        return Ok(file.mail);
+    }
+    match toml::from_str::<Mail>(text) {
+        Ok(m) => Ok(m),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PhpFile {
+    pub php: Php,
+}
+
+fn parse_php(text: &str) -> std::result::Result<Php, String> {
+    if let Ok(file) = toml::from_str::<PhpFile>(text) {
+        return Ok(file.php);
+    }
+    match toml::from_str::<Php>(text) {
+        Ok(p) => Ok(p),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WebFile {
+    pub web: Web,
+    #[serde(default)]
+    pub load_balancer: Proxy,
+    #[serde(default)]
+    pub security: Security,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FlatWebFile {
+    #[serde(flatten)]
+    pub web: Web,
+    #[serde(default)]
+    pub load_balancer: Proxy,
+    #[serde(default)]
+    pub security: Security,
+}
+
+fn parse_web(text: &str) -> std::result::Result<(Web, Proxy, Security), String> {
+    if let Ok(file) = toml::from_str::<WebFile>(text) {
+        return Ok((file.web, file.load_balancer, file.security));
+    }
+    match toml::from_str::<FlatWebFile>(text) {
+        Ok(file) => Ok((file.web, file.load_balancer, file.security)),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[cfg(unix)]
+pub fn is_process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .status()
+        .map_or(false, |s| s.success())
+}
+#[cfg(not(unix))]
+pub fn is_process_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
+pub fn send_hup(pid: u32) -> Result<()> {
+    let status = std::process::Command::new("kill")
+        .args(["-HUP", &pid.to_string()])
+        .status()
+        .context("run kill command")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("failed to signal PID {pid}")
+    }
+}
+
+pub fn find_server_pid() -> Option<u32> {
+    if let Ok(content) = fs::read_to_string("/tmp/eafrei.pid") {
+        if let Ok(pid) = content.trim().parse::<u32>() {
+            if pid != std::process::id() && is_process_alive(pid) {
+                return Some(pid);
+            }
+        }
+    }
+    if let Ok(entries) = fs::read_dir("/proc") {
+        for entry in entries.flatten() {
+            if let Ok(name) = entry.file_name().into_string() {
+                if let Ok(pid) = name.parse::<u32>() {
+                    if pid != std::process::id() && is_process_alive(pid) {
+                        let comm_path = format!("/proc/{pid}/comm");
+                        if let Ok(comm) = fs::read_to_string(&comm_path) {
+                            if comm.trim() == "eafrei" {
+                                return Some(pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 impl Config {
+    pub fn config_dir(path: &Path) -> PathBuf {
+        if path.is_dir() {
+            path.to_path_buf()
+        } else if let Some(parent) = path.parent() {
+            if parent.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                parent.to_path_buf()
+            }
+        } else {
+            PathBuf::from(".")
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-        let mut c: Self = toml::from_str(&text).map_err(|e: toml::de::Error| {
-            anyhow::anyhow!("invalid config {}: {}", path.display(), e.message())
-        })?;
-        let parent = path.parent().context("config has no parent directory")?;
+        let dir = Self::config_dir(path);
+        let mail_path = dir.join("mail.conf");
+        let php_path = dir.join("php.conf");
+        let web_path = dir.join("web.conf");
+
+        let mail_text = fs::read_to_string(&mail_path)
+            .with_context(|| format!("read {}", mail_path.display()))?;
+        let mail = parse_mail(&mail_text)
+            .map_err(|e| anyhow::anyhow!("invalid config {}: {}", mail_path.display(), e))?;
+
+        let php_text = fs::read_to_string(&php_path)
+            .with_context(|| format!("read {}", php_path.display()))?;
+        let php = parse_php(&php_text)
+            .map_err(|e| anyhow::anyhow!("invalid config {}: {}", php_path.display(), e))?;
+
+        let web_text = fs::read_to_string(&web_path)
+            .with_context(|| format!("read {}", web_path.display()))?;
+        let (web, load_balancer, security) = parse_web(&web_text)
+            .map_err(|e| anyhow::anyhow!("invalid config {}: {}", web_path.display(), e))?;
+
+        let mut c = Self {
+            web,
+            php,
+            mail,
+            security,
+            load_balancer,
+        };
+
         for p in [
             &mut c.web.static_dir,
             &mut c.web.tls_cert,
             &mut c.web.tls_key,
             &mut c.mail.spool_dir,
         ] {
-            *p = parent.join(&*p);
+            *p = dir.join(&*p);
         }
         c.web.static_dir = fs::canonicalize(&c.web.static_dir)
             .with_context(|| format!("document root {}", c.web.static_dir.display()))?;
@@ -205,6 +357,144 @@ impl Config {
         }
         Ok(c)
     }
+
+    pub fn check(path: &Path) -> (usize, Vec<String>) {
+        let dir = Self::config_dir(path);
+        let mail_path = dir.join("mail.conf");
+        let php_path = dir.join("php.conf");
+        let web_path = dir.join("web.conf");
+
+        let mut mail_errors = Vec::new();
+        let mut php_errors = Vec::new();
+        let mut web_errors = Vec::new();
+
+        match fs::read_to_string(&mail_path) {
+            Err(e) => mail_errors.push(e.to_string()),
+            Ok(text) => match parse_mail(&text) {
+                Err(e) => mail_errors.push(e),
+                Ok(mail) => {
+                    if mail.enabled {
+                        if !mail.bind.is_loopback() {
+                            mail_errors.push("the unauthenticated SMTP inbox must use a loopback IP".into());
+                        }
+                        if mail.port == 0 {
+                            mail_errors.push("the unauthenticated SMTP inbox must use a nonzero port".into());
+                        }
+                    }
+                }
+            },
+        }
+
+        match fs::read_to_string(&php_path) {
+            Err(e) => php_errors.push(e.to_string()),
+            Ok(text) => match parse_php(&text) {
+                Err(e) => php_errors.push(e),
+                Ok(php) => {
+                    if !(1..=600).contains(&php.timeout_secs) {
+                        php_errors.push("invalid backend timeout".into());
+                    }
+                    if !(1..=1024).contains(&php.max_concurrency) || php.max_body_bytes > 128 << 20 {
+                        php_errors.push("invalid PHP limits".into());
+                    }
+                    if let Some(sock) = php.endpoint.strip_prefix("unix:") {
+                        if !(cfg!(unix) && Path::new(sock).is_absolute()) {
+                            php_errors.push("PHP needs an absolute Unix socket path on Unix".into());
+                        }
+                    } else {
+                        match php.endpoint.parse::<SocketAddr>() {
+                            Ok(addr) => {
+                                if !addr.ip().is_loopback() || addr.port() == 0 {
+                                    php_errors.push("FastCGI TCP must be on loopback".into());
+                                }
+                            }
+                            Err(_) => {
+                                php_errors.push("PHP endpoint must be a loopback IP:port or unix:/path".into());
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        match fs::read_to_string(&web_path) {
+            Err(e) => web_errors.push(e.to_string()),
+            Ok(text) => match parse_web(&text) {
+                Err(e) => web_errors.push(e),
+                Ok((web, load_balancer, _security)) => {
+                    let static_dir = dir.join(&web.static_dir);
+                    match fs::canonicalize(&static_dir) {
+                        Ok(canon) => {
+                            if !canon.is_dir() {
+                                web_errors.push("static_dir must be a directory".into());
+                            }
+                        }
+                        Err(_) => {
+                            web_errors.push("static_dir does not exist".into());
+                        }
+                    }
+                    if web.port == 0 || (web.tls_port != 0 && web.port == web.tls_port) {
+                        web_errors.push("invalid or overlapping HTTP/TLS ports".into());
+                    }
+                    if !(crate::paths::public_segment(&web.default_page)
+                        && (crate::paths::mime(&web.default_page).is_some()
+                            || crate::paths::is_php(&web.default_page))) {
+                        web_errors.push("default_page must be one public filename".into());
+                    }
+                    if web.cache_file_bytes > 64 << 20 || web.cache_bytes > 1024 << 20 {
+                        web_errors.push("cache limits too large".into());
+                    }
+                    if !(1..=3600).contains(&load_balancer.timeout_secs) {
+                        web_errors.push("invalid backend timeout".into());
+                    }
+                    for origin in &load_balancer.upstreams {
+                        match reqwest::Url::parse(origin) {
+                            Ok(u) => {
+                                if !(matches!(u.scheme(), "http" | "https")
+                                    && u.host().is_some()
+                                    && u.username().is_empty()
+                                    && u.password().is_none()
+                                    && u.path() == "/"
+                                    && u.query().is_none()
+                                    && u.fragment().is_none()) {
+                                    web_errors.push("upstreams must be HTTP(S) origins without credentials, path or query".into());
+                                }
+                            }
+                            Err(_) => {
+                                web_errors.push("invalid upstream URL".into());
+                            }
+                        }
+                    }
+                    if web.enable_load_balancer && load_balancer.upstreams.is_empty() {
+                        web_errors.push("load balancing needs at least one upstream".into());
+                    }
+                    if web.tls_port != 0 {
+                        let cert = dir.join(&web.tls_cert);
+                        let key = dir.join(&web.tls_key);
+                        if !cert.exists() {
+                            web_errors.push("tls_cert file does not exist".into());
+                        }
+                        if !key.exists() {
+                            web_errors.push("tls_key file does not exist".into());
+                        }
+                    }
+                }
+            },
+        }
+
+        let total = mail_errors.len() + php_errors.len() + web_errors.len();
+        let mut bad_files = Vec::new();
+        if !mail_errors.is_empty() {
+            bad_files.push("mail.conf".into());
+        }
+        if !php_errors.is_empty() {
+            bad_files.push("php.conf".into());
+        }
+        if !web_errors.is_empty() {
+            bad_files.push("web.conf".into());
+        }
+        (total, bad_files)
+    }
+
     pub fn same_listeners(&self, new: &Self) -> bool {
         (
             self.web.bind,
