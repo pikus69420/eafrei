@@ -1,0 +1,16 @@
+[Unit]
+Description=eafrei Web Server
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/eafrei
+ExecReload=/usr/bin/eafrei reload
+Restart=on-failure
+RestartSec=3s
+LimitNOFILE=16384
+MemoryHigh=96M
+MemoryMax=112M
+
+[Install]
+WantedBy=multi-user.target

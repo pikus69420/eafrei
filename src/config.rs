@@ -48,8 +48,8 @@ impl Default for Web {
             tls_key: "../certs/key.pem".into(),
             enable_htaccess: true,
             enable_load_balancer: false,
-            cache_bytes: 16 << 20,
-            cache_file_bytes: 64 << 10,
+            cache_bytes: 8 << 20,
+            cache_file_bytes: 32 << 10,
         }
     }
 }
@@ -67,8 +67,8 @@ impl Default for Php {
         Self {
             enabled: false,
             endpoint: "127.0.0.1:9000".into(),
-            max_body_bytes: 8 << 20,
-            max_concurrency: 16,
+            max_body_bytes: 4 << 20,
+            max_concurrency: 4,
             timeout_secs: 30,
         }
     }
@@ -240,6 +240,28 @@ pub fn find_server_pid() -> Option<u32> {
     None
 }
 
+pub fn save_lang(dir: &Path, lang: &str) -> Result<()> {
+    let _ = fs::write(dir.join(".lang"), lang);
+    let _ = fs::write("config/.lang", lang);
+    Ok(())
+}
+
+pub fn get_lang(dir: &Path) -> String {
+    if let Ok(content) = fs::read_to_string(dir.join(".lang")) {
+        let trimmed = content.trim().to_lowercase();
+        if trimmed == "pl" || trimmed == "en" {
+            return trimmed;
+        }
+    }
+    if let Ok(content) = fs::read_to_string("config/.lang") {
+        let trimmed = content.trim().to_lowercase();
+        if trimmed == "pl" || trimmed == "en" {
+            return trimmed;
+        }
+    }
+    "en".to_string()
+}
+
 impl Config {
     pub fn config_dir(path: &Path) -> PathBuf {
         if path.is_dir() {
@@ -306,7 +328,7 @@ impl Config {
             "default_page must be one public filename"
         );
         ensure!(
-            c.web.cache_file_bytes <= 64 << 20 && c.web.cache_bytes <= 1024 << 20,
+            c.web.cache_file_bytes <= 16 << 20 && c.web.cache_bytes <= 64 << 20,
             "cache limits too large"
         );
         ensure!(
@@ -315,7 +337,7 @@ impl Config {
             "invalid backend timeout"
         );
         ensure!(
-            (1..=1024).contains(&c.php.max_concurrency) && c.php.max_body_bytes <= 128 << 20,
+            (1..=32).contains(&c.php.max_concurrency) && c.php.max_body_bytes <= 32 << 20,
             "invalid PHP limits"
         );
         if let Some(sock) = c.php.endpoint.strip_prefix("unix:") {
@@ -393,7 +415,7 @@ impl Config {
                     if !(1..=600).contains(&php.timeout_secs) {
                         php_errors.push("invalid backend timeout".into());
                     }
-                    if !(1..=1024).contains(&php.max_concurrency) || php.max_body_bytes > 128 << 20 {
+                    if !(1..=32).contains(&php.max_concurrency) || php.max_body_bytes > 32 << 20 {
                         php_errors.push("invalid PHP limits".into());
                     }
                     if let Some(sock) = php.endpoint.strip_prefix("unix:") {
@@ -440,7 +462,7 @@ impl Config {
                             || crate::paths::is_php(&web.default_page))) {
                         web_errors.push("default_page must be one public filename".into());
                     }
-                    if web.cache_file_bytes > 64 << 20 || web.cache_bytes > 1024 << 20 {
+                    if web.cache_file_bytes > 16 << 20 || web.cache_bytes > 64 << 20 {
                         web_errors.push("cache limits too large".into());
                     }
                     if !(1..=3600).contains(&load_balancer.timeout_secs) {

@@ -11,8 +11,135 @@ use tokio::{
     sync::{watch, Semaphore},
     time::timeout,
 };
+
 const LINE: usize = 1000;
 const MAX: usize = 1024 * 1024;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Account {
+    pub name: String,
+    pub password: String,
+    pub no_reply: bool,
+    pub created_at: String,
+    #[serde(default)]
+    pub messages: Vec<StoredMessage>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct StoredMessage {
+    pub id: String,
+    pub from: String,
+    pub to: Vec<String>,
+    pub received_at: String,
+    pub data: String,
+}
+
+#[derive(Default, Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct MailStore {
+    #[serde(default)]
+    pub accounts: Vec<Account>,
+}
+
+fn current_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("{secs}")
+}
+
+fn extract_username(recipient: &str) -> String {
+    let clean = recipient.trim().trim_start_matches('<').trim_end_matches('>');
+    if let Some((user, _domain)) = clean.split_once('@') {
+        user.trim().to_string()
+    } else {
+        clean.trim().to_string()
+    }
+}
+
+impl MailStore {
+    pub fn load_from_dir(dir: &Path) -> Self {
+        let path = dir.join("accounts.json");
+        if let Ok(data) = std::fs::read_to_string(&path) {
+            if let Ok(store) = serde_json::from_str::<Self>(&data) {
+                return store;
+            }
+        }
+        Self::default()
+    }
+
+    pub fn save_to_dir(&self, dir: &Path) -> io::Result<()> {
+        let path = dir.join("accounts.json");
+        let content = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
+        let mut tmp = tempfile::Builder::new()
+            .prefix(".accounts-")
+            .tempfile_in(dir)?;
+        tmp.write_all(content.as_bytes())?;
+        tmp.as_file().sync_all()?;
+        let _ = std::fs::remove_file(&path);
+        tmp.persist(&path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    pub fn add_or_update(&mut self, name: &str, password: &str, no_reply: bool) {
+        let now = current_timestamp();
+        if let Some(acc) = self.accounts.iter_mut().find(|a| a.name.eq_ignore_ascii_case(name)) {
+            acc.password = password.to_string();
+            acc.no_reply = no_reply;
+        } else {
+            self.accounts.push(Account {
+                name: name.to_string(),
+                password: password.to_string(),
+                no_reply,
+                created_at: now,
+                messages: Vec::new(),
+            });
+        }
+    }
+
+    pub fn record_message(&mut self, from: &str, to: &[String], data: &[u8]) {
+        let now = current_timestamp();
+        let hash = blake3::hash(data).to_hex().to_string();
+        let body = String::from_utf8_lossy(data).to_string();
+        let msg = StoredMessage {
+            id: hash,
+            from: from.to_string(),
+            to: to.to_vec(),
+            received_at: now.clone(),
+            data: body,
+        };
+        let mut matched = false;
+        for recipient in to {
+            let user = extract_username(recipient);
+            if let Some(acc) = self.accounts.iter_mut().find(|a| a.name.eq_ignore_ascii_case(&user)) {
+                acc.messages.push(msg.clone());
+                matched = true;
+            }
+        }
+        if !matched {
+            let default_name = to.first().map(|r| extract_username(r)).unwrap_or_else(|| "inbox".to_string());
+            if let Some(acc) = self.accounts.iter_mut().find(|a| a.name.eq_ignore_ascii_case(&default_name)) {
+                acc.messages.push(msg);
+            } else {
+                self.accounts.push(Account {
+                    name: default_name,
+                    password: String::new(),
+                    no_reply: false,
+                    created_at: now,
+                    messages: vec![msg],
+                });
+            }
+        }
+    }
+}
+
+pub fn save_account(dir: &Path, name: &str, password: &str, no_reply: bool) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let mut store = MailStore::load_from_dir(dir);
+    store.add_or_update(name, password, no_reply);
+    store.save_to_dir(dir)
+}
+
 async fn line<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> io::Result<bool> {
     buf.clear();
     let n = timeout(
@@ -32,6 +159,7 @@ async fn line<R: AsyncBufRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> io::Resu
     }
     Ok(true)
 }
+
 async fn persist(
     dir: Arc<PathBuf>,
     data: Vec<u8>,
@@ -43,7 +171,7 @@ async fn persist(
             .prefix(".incoming-")
             .tempfile_in(&*dir)?;
         write!(tmp, "X-Eafrei-Envelope-From: {from}\r\n")?;
-        for recipient in to {
+        for recipient in &to {
             write!(tmp, "X-Eafrei-Envelope-To: {recipient}\r\n")?;
         }
         tmp.write_all(&data)?;
@@ -58,11 +186,17 @@ async fn persist(
         tmp.persist_noclobber(dest).map_err(|e| e.error)?;
         #[cfg(unix)]
         std::fs::File::open(&*dir)?.sync_all()?;
+
+        let mut store = MailStore::load_from_dir(&dir);
+        store.record_message(&from, &to, &data);
+        let _ = store.save_to_dir(&dir);
+
         Ok(())
     })
     .await
     .map_err(io::Error::other)?
 }
+
 fn mailbox(arg: &str, null_ok: bool) -> bool {
     arg.starts_with('<')
         && arg.ends_with('>')
@@ -71,6 +205,7 @@ fn mailbox(arg: &str, null_ok: bool) -> bool {
             .bytes()
             .all(|b| b.is_ascii_graphic() && !matches!(b, b'<' | b'>'))
 }
+
 async fn session(sock: TcpStream, dir: Arc<PathBuf>) -> io::Result<()> {
     let (r, mut w) = sock.into_split();
     let mut r = BufReader::new(r);
@@ -159,13 +294,14 @@ async fn session(sock: TcpStream, dir: Arc<PathBuf>) -> io::Result<()> {
     }
     Ok(())
 }
+
 pub async fn serve(
     listener: TcpListener,
     path: &Path,
     mut stop: watch::Receiver<bool>,
 ) -> Result<()> {
     let dir = Arc::new(path.to_owned());
-    let slots = Arc::new(Semaphore::new(32));
+    let slots = Arc::new(Semaphore::new(8));
     let mut tasks = tokio::task::JoinSet::new();
     loop {
         tokio::select! {biased;

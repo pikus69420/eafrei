@@ -74,8 +74,8 @@ impl App {
             client: reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
-                .pool_max_idle_per_host(64)
-                .pool_idle_timeout(Duration::from_secs(60))
+                .pool_max_idle_per_host(4)
+                .pool_idle_timeout(Duration::from_secs(15))
                 .connect_timeout(Duration::from_secs(5))
                 .build()?,
             reload: Mutex::new(()),

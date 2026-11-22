@@ -154,6 +154,7 @@ if (( build_tar )); then
     install -m 0644 -- config/mail.conf "$pkg/config/mail.conf"
     install -m 0644 -- config/php.conf "$pkg/config/php.conf"
     install -m 0644 -- config/web.conf "$pkg/config/web.conf"
+    install -m 0644 -- packaging/eafrei.service "$pkg/eafrei.service"
     install -m 0644 -- public/index.html "$pkg/public/index.html"
     if [[ -f public/.htaccess ]]; then
         install -m 0644 -- public/.htaccess "$pkg/public/.htaccess"

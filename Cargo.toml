@@ -25,6 +25,7 @@ percent-encoding = "2"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls", "http2"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 subtle = "2"
 tempfile = "3"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -32,9 +33,11 @@ tokio-util = { version = "0.7", features = ["io"] }
 toml = "0.8"
 
 [profile.release]
-lto = "thin"
 opt-level = 3
-strip = "debuginfo"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
 
 [package.metadata.generate-rpm]
 assets = [
@@ -42,9 +45,13 @@ assets = [
   { source = "packaging/mail.conf", dest = "/etc/eafrei/mail.conf", mode = "0644", config = "noreplace" },
   { source = "packaging/php.conf", dest = "/etc/eafrei/php.conf", mode = "0644", config = "noreplace" },
   { source = "packaging/web.conf", dest = "/etc/eafrei/web.conf", mode = "0644", config = "noreplace" },
+  { source = "packaging/eafrei.service", dest = "/usr/lib/systemd/system/eafrei.service", mode = "0644" },
   { source = "public/index.html", dest = "/var/www/eafrei/public/index.html", mode = "0644" },
   { source = "public/.htaccess", dest = "/var/www/eafrei/public/.htaccess", mode = "0644" },
 ]
+post_install_script = "systemctl daemon-reload >/dev/null 2>&1 || :"
+pre_uninstall_script = "systemctl --no-reload disable --now eafrei.service >/dev/null 2>&1 || :"
+post_uninstall_script = "systemctl daemon-reload >/dev/null 2>&1 || :"
 
 [package.metadata.deb]
 maintainer = "Antoni Kundera"
@@ -53,12 +60,14 @@ license-file = ["LICENSE-MIT", "0"]
 depends = "$auto"
 section = "web"
 priority = "optional"
+maintainer-scripts = "packaging/deb"
 conf-files = ["/etc/eafrei/mail.conf", "/etc/eafrei/php.conf", "/etc/eafrei/web.conf"]
 assets = [
   ["target/release/eafrei", "usr/bin/eafrei", "755"],
   ["packaging/mail.conf", "etc/eafrei/mail.conf", "644"],
   ["packaging/php.conf", "etc/eafrei/php.conf", "644"],
   ["packaging/web.conf", "etc/eafrei/web.conf", "644"],
+  ["packaging/eafrei.service", "lib/systemd/system/eafrei.service", "644"],
   ["public/index.html", "var/www/eafrei/public/index.html", "644"],
   ["public/.htaccess", "var/www/eafrei/public/.htaccess", "644"],
 ]

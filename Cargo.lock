@@ -314,6 +314,7 @@ dependencies = [
  "reqwest",
  "rustls",
  "serde",
+ "serde_json",
  "subtle",
  "tempfile",
  "tokio",

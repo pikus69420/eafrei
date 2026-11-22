@@ -21,26 +21,50 @@ use std::{
 use tokio::{sync::watch, task::JoinSet};
 use web::{App, Link, Snapshot};
 
-fn add_email_acc(name: &str) -> Result<()> {
+fn add_email_acc(config_path: &Path, name: &str) -> Result<()> {
+    let dir = config::Config::config_dir(config_path);
+    let lang = config::get_lang(&dir);
+    let is_pl = lang == "pl";
     loop {
-        println!("Password for {name}:");
+        if is_pl {
+            println!("Hasło dla {name}:");
+        } else {
+            println!("Password for {name}:");
+        }
         let mut line = String::new();
         if std::io::stdin().read_line(&mut line)? == 0 {
             bail!("unexpected end of input");
         }
         let pwd = line.trim_end_matches(&['\r', '\n'][..]);
         if pwd.chars().count() >= 4 {
-            break;
-        }
-    }
-    loop {
-        println!("Set mail account {name} as no-reply?");
-        let mut line = String::new();
-        if std::io::stdin().read_line(&mut line)? == 0 {
-            bail!("unexpected end of input");
-        }
-        let ans = line.trim();
-        if ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("n") {
+            let is_no_reply = loop {
+                if is_pl {
+                    println!("Ustawić konto pocztowe {name} jako tylko skrzynkę odbiorczą? (y/n)");
+                } else {
+                    println!("Set mail account {name} as no-reply? (y/n)");
+                }
+                let mut ans_line = String::new();
+                if std::io::stdin().read_line(&mut ans_line)? == 0 {
+                    bail!("unexpected end of input");
+                }
+                let ans = ans_line.trim();
+                if ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("tak") || ans.eq_ignore_ascii_case("t") {
+                    break true;
+                } else if ans.eq_ignore_ascii_case("n") || ans.eq_ignore_ascii_case("nie") {
+                    break false;
+                }
+            };
+            let spool_dir = if let Ok(cfg) = config::Config::load(config_path) {
+                cfg.mail.spool_dir
+            } else {
+                dir.join("../var/mail")
+            };
+            mail::save_account(&spool_dir, name, pwd, is_no_reply)?;
+            if is_pl {
+                println!("Konto pocztowe {name} zostało pomyślnie zapisane.");
+            } else {
+                println!("Email account {name} saved successfully.");
+            }
             break;
         }
     }
@@ -50,7 +74,9 @@ fn add_email_acc(name: &str) -> Result<()> {
 enum Action {
     Serve(PathBuf),
     Check(PathBuf),
-    Reload,
+    Reload(PathBuf),
+    SetLang(PathBuf, String),
+    AddEmail(PathBuf, String),
 }
 
 fn args() -> Result<Option<Action>> {
@@ -58,6 +84,8 @@ fn args() -> Result<Option<Action>> {
     let mut explicit = None;
     let mut check = false;
     let mut reload = false;
+    let mut set_lang = None;
+    let mut add_email = None;
     while let Some(arg) = args.next() {
         if arg == "--config" {
             explicit = Some(PathBuf::from(
@@ -67,11 +95,24 @@ fn args() -> Result<Option<Action>> {
             check = true;
         } else if arg == "reload" {
             reload = true;
+        } else if arg == "set-lang" {
+            let l = args.next().context("missing language code (pl or en)")?;
+            let ls = l.to_str().context("invalid language code")?;
+            if ls != "pl" && ls != "en" {
+                bail!("unsupported language: {ls}. Supported: pl, en");
+            }
+            set_lang = Some(ls.to_string());
         } else if arg == "--version" {
             println!("eafrei {}", env!("CARGO_PKG_VERSION"));
             return Ok(None);
         } else if arg == "--help" || arg == "-h" {
-            println!("eafrei [--config DIR] [--check]\neafrei check\neafrei reload\nConfig: --config > EAFREI_CONFIG > /etc/eafrei > config");
+            let default_dir = Path::new("config");
+            let lang = config::get_lang(default_dir);
+            if lang == "pl" {
+                println!("eafrei [--config KATALOG] [--check]\neafrei check\neafrei reload\neafrei set-lang [pl|en]\neafrei add email-acc <nazwa>\nKonfiguracja: --config > EAFREI_CONFIG > /etc/eafrei > config");
+            } else {
+                println!("eafrei [--config DIR] [--check]\neafrei check\neafrei reload\neafrei set-lang [pl|en]\neafrei add email-acc <name>\nConfig: --config > EAFREI_CONFIG > /etc/eafrei > config");
+            }
             return Ok(None);
         } else if arg == "add" {
             let sub = args.next().context("missing subcommand for add")?;
@@ -81,20 +122,13 @@ fn args() -> Result<Option<Action>> {
                 if name.is_empty() {
                     bail!("account name cannot be empty");
                 }
-                if let Some(extra) = args.next() {
-                    bail!("unexpected argument: {extra:?}");
-                }
-                add_email_acc(name)?;
-                return Ok(None);
+                add_email = Some(name.to_string());
             } else {
                 bail!("unknown option: {sub:?}");
             }
         } else {
             bail!("unknown option: {arg:?}");
         }
-    }
-    if reload {
-        return Ok(Some(Action::Reload));
     }
     let path = explicit
         .or_else(|| {
@@ -111,6 +145,15 @@ fn args() -> Result<Option<Action>> {
             }
         });
     let abs_path = std::path::absolute(path)?;
+    if let Some(l) = set_lang {
+        return Ok(Some(Action::SetLang(abs_path, l)));
+    }
+    if let Some(name) = add_email {
+        return Ok(Some(Action::AddEmail(abs_path, name)));
+    }
+    if reload {
+        return Ok(Some(Action::Reload(abs_path)));
+    }
     if check {
         Ok(Some(Action::Check(abs_path)))
     } else {
@@ -156,27 +199,51 @@ async fn main() -> Result<()> {
         return Ok(());
     };
     match action {
+        Action::SetLang(path, lang) => {
+            let dir = config::Config::config_dir(&path);
+            config::save_lang(&dir, &lang)?;
+            if lang == "pl" {
+                println!("Język został przełączony na polski (pl)");
+            } else {
+                println!("Language switched to English (en)");
+            }
+            return Ok(());
+        }
+        Action::AddEmail(path, name) => {
+            add_email_acc(&path, &name)?;
+            return Ok(());
+        }
         Action::Check(path) => {
             let (count, bad_files) = config::Config::check(&path);
             if count == 0 {
                 println!("Configuration is OK");
                 return Ok(());
             } else {
-                println!("Found {} error(s) at these files: [{}]", count, bad_files.join(", "));
+                println!("Found {} error(s) at these files: {}", count, bad_files.join(", "));
                 std::process::exit(1);
             }
         }
-        Action::Reload => {
+        Action::Reload(path) => {
+            let dir = config::Config::config_dir(&path);
+            let is_pl = config::get_lang(&dir) == "pl";
             #[cfg(unix)]
             {
                 match config::find_server_pid() {
                     Some(pid) => {
                         config::send_hup(pid)?;
-                        println!("Configuration reloaded");
+                        if is_pl {
+                            println!("Konfiguracja przeładowana");
+                        } else {
+                            println!("Configuration reloaded");
+                        }
                         return Ok(());
                     }
                     None => {
-                        bail!("eafrei server is not running");
+                        if is_pl {
+                            bail!("serwer eafrei nie jest uruchomiony");
+                        } else {
+                            bail!("eafrei server is not running");
+                        }
                     }
                 }
             }
