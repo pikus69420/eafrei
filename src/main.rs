@@ -294,6 +294,11 @@ async fn main() -> Result<()> {
             };
             #[cfg(unix)]
             on_hup(app.clone())?;
+            if let Ok(meta) = fs::symlink_metadata("/tmp/eafrei.pid") {
+                if meta.file_type().is_symlink() {
+                    let _ = fs::remove_file("/tmp/eafrei.pid");
+                }
+            }
             let _ = fs::write("/tmp/eafrei.pid", std::process::id().to_string());
             let _pid_guard = PidFileGuard;
             let mut jobs = JoinSet::<Result<()>>::new();

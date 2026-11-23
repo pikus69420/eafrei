@@ -187,8 +187,13 @@ impl Catalog {
                     return Found::File(index, v);
                 }
             }
-        } else if self.dirs.contains_key(&format!("{path}/")) {
-            return Found::Slash;
+        } else {
+            let mut slashed = String::with_capacity(path.len() + 1);
+            slashed.push_str(path);
+            slashed.push('/');
+            if self.dirs.contains_key(&slashed) {
+                return Found::Slash;
+            }
         }
         Found::Missing
     }

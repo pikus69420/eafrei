@@ -214,9 +214,17 @@ pub fn send_hup(pid: u32) -> Result<()> {
 }
 
 pub fn find_server_pid() -> Option<u32> {
+    let is_eafrei = |pid: u32| {
+        let comm_path = format!("/proc/{pid}/comm");
+        if let Ok(comm) = fs::read_to_string(&comm_path) {
+            comm.trim() == "eafrei"
+        } else {
+            true
+        }
+    };
     if let Ok(content) = fs::read_to_string("/tmp/eafrei.pid") {
         if let Ok(pid) = content.trim().parse::<u32>() {
-            if pid != std::process::id() && is_process_alive(pid) {
+            if pid != std::process::id() && is_process_alive(pid) && is_eafrei(pid) {
                 return Some(pid);
             }
         }

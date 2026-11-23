@@ -119,8 +119,13 @@ async fn run(
     for name in parts.headers.keys() {
         let n = name.as_str();
         if matches!(n, "content-type" | "content-length" | "host")
+            || n.eq_ignore_ascii_case("proxy")
             || !n.bytes().all(|b| b == b'-' || b.is_ascii_alphanumeric())
         {
+            continue;
+        }
+        let env_name = n.replace('-', "_").to_ascii_uppercase();
+        if env_name == "PROXY" {
             continue;
         }
         let mut val = String::new();
@@ -135,10 +140,7 @@ async fn run(
             }
             val.push_str(s);
         }
-        p = p.custom(
-            format!("HTTP_{}", n.replace('-', "_").to_ascii_uppercase()),
-            val,
-        );
+        p = p.custom(format!("HTTP_{env_name}"), val);
     }
     let conn = connect(&cfg.endpoint)
         .await
@@ -147,7 +149,7 @@ async fn run(
         .execute_once_stream(CgiRequest::new(p, fastcgi_client::io::Cursor::new(b)))
         .await
         .map_err(|_| StatusCode::BAD_GATEWAY)?;
-    let mut buf = BytesMut::new();
+    let mut buf = BytesMut::with_capacity(4096);
     let end = loop {
         let chunk = stream
             .next()

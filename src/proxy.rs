@@ -24,15 +24,15 @@ pub fn strip_hop(hdr: &mut HeaderMap) {
         hdr.remove(n);
     }
     for n in [
-        "connection",
-        "keep-alive",
-        "proxy-connection",
-        "proxy-authenticate",
-        "proxy-authorization",
-        "te",
-        "trailer",
-        "transfer-encoding",
-        "upgrade",
+        h::CONNECTION,
+        HeaderName::from_static("keep-alive"),
+        HeaderName::from_static("proxy-connection"),
+        HeaderName::from_static("proxy-authenticate"),
+        HeaderName::from_static("proxy-authorization"),
+        h::TE,
+        h::TRAILER,
+        h::TRANSFER_ENCODING,
+        h::UPGRADE,
     ] {
         hdr.remove(n);
     }

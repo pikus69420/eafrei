@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use arc_swap::ArcSwap;
 use axum::{
     extract::{ConnectInfo, Request, State},
-    http::{header as h, HeaderValue, Method, StatusCode},
+    http::{header as h, HeaderName, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     Extension, Router,
 };
@@ -111,11 +111,41 @@ async fn dispatch(
     Extension(link): Extension<Link>,
     req: Request,
 ) -> Response {
+    if req.method() == Method::TRACE || req.method().as_str().eq_ignore_ascii_case("TRACK") {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            [(h::ALLOW, "GET, HEAD, POST, PUT, DELETE, OPTIONS, PATCH")],
+        )
+            .into_response();
+    }
     let mut res = route(&app, peer, link, req).await;
-    res.headers_mut().insert(
+    let hdr = res.headers_mut();
+    hdr.insert(
         h::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    hdr.insert(
+        h::X_FRAME_OPTIONS,
+        HeaderValue::from_static("SAMEORIGIN"),
+    );
+    hdr.insert(
+        h::REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    hdr.insert(
+        HeaderName::from_static("x-xss-protection"),
+        HeaderValue::from_static("0"),
+    );
+    hdr.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    if link.tls {
+        hdr.insert(
+            h::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        );
+    }
     res
 }
 async fn route(app: &App, peer: SocketAddr, link: Link, req: Request) -> Response {
@@ -178,7 +208,11 @@ async fn route(app: &App, peer: SocketAddr, link: Link, req: Request) -> Respons
                 to.push('?');
                 to.push_str(q);
             }
-            (StatusCode::PERMANENT_REDIRECT, [(h::LOCATION, to)]).into_response()
+            if let Ok(loc) = HeaderValue::try_from(to) {
+                (StatusCode::PERMANENT_REDIRECT, [(h::LOCATION, loc)]).into_response()
+            } else {
+                StatusCode::BAD_REQUEST.into_response()
+            }
         }
         Found::Missing if site.cfg.web.enable_load_balancer && !paths::reserved_script(&path) => {
             proxy::forward(

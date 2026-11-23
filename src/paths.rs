@@ -11,8 +11,10 @@ pub fn decode(raw: &str) -> Result<Cow<'_, str>, StatusCode> {
     }
     let b = raw.as_bytes();
     let mut i = 0;
+    let mut has_pct = false;
     while i < b.len() {
         if b[i] == b'%' {
+            has_pct = true;
             if i + 2 >= b.len() {
                 return Err(StatusCode::BAD_REQUEST);
             }
@@ -30,13 +32,46 @@ pub fn decode(raw: &str) -> Result<Cow<'_, str>, StatusCode> {
             i += 1;
         }
     }
-    let path = percent_decode_str(raw)
-        .decode_utf8()
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let path = if has_pct {
+        percent_decode_str(raw)
+            .decode_utf8()
+            .map_err(|_| StatusCode::BAD_REQUEST)?
+    } else {
+        Cow::Borrowed(raw)
+    };
     if path.split('/').any(|s| !s.is_empty() && !public_segment(s)) {
         return Err(StatusCode::NOT_FOUND);
     }
     Ok(path)
+}
+
+fn is_dos_device(s: &str) -> bool {
+    let name = s.split('.').next().unwrap_or(s);
+    matches!(
+        name.to_ascii_uppercase().as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    )
 }
 
 pub fn public_segment(s: &str) -> bool {
@@ -45,6 +80,7 @@ pub fn public_segment(s: &str) -> bool {
         && !s.ends_with(['.', ' ', '~'])
         && !s.contains(['/', '\\', ':', '%', '#', '?'])
         && !s.chars().any(char::is_control)
+        && !is_dos_device(s)
 }
 fn ext(s: &str) -> &str {
     s.rsplit_once('.').map(|v| v.1).unwrap_or("")
@@ -56,6 +92,7 @@ pub fn reserved_script(s: &str) -> bool {
     s.split('/').flat_map(|p| p.split('.').skip(1)).any(|p| {
         [
             "php", "phtml", "phps", "phar", "inc", "php3", "php4", "php5", "php7", "php8",
+            "pht", "phpt", "cgi", "sh", "bash", "env", "htaccess", "htpasswd",
         ]
         .iter()
         .any(|e| p.eq_ignore_ascii_case(e))

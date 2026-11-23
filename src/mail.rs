@@ -14,6 +14,10 @@ use tokio::{
 
 const LINE: usize = 1000;
 const MAX: usize = 1024 * 1024;
+const MAX_MESSAGES: usize = 100;
+const MAX_DATA: usize = 65536;
+
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Account {
@@ -69,6 +73,11 @@ impl MailStore {
     }
 
     pub fn save_to_dir(&self, dir: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
         let path = dir.join("accounts.json");
         let content = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
         let mut tmp = tempfile::Builder::new()
@@ -76,8 +85,18 @@ impl MailStore {
             .tempfile_in(dir)?;
         tmp.write_all(content.as_bytes())?;
         tmp.as_file().sync_all()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600));
+        }
         let _ = std::fs::remove_file(&path);
         tmp.persist(&path).map_err(|e| e.error)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
         Ok(())
     }
 
@@ -100,7 +119,11 @@ impl MailStore {
     pub fn record_message(&mut self, from: &str, to: &[String], data: &[u8]) {
         let now = current_timestamp();
         let hash = blake3::hash(data).to_hex().to_string();
-        let body = String::from_utf8_lossy(data).to_string();
+        let body = if data.len() > MAX_DATA {
+            String::from_utf8_lossy(&data[..MAX_DATA]).to_string()
+        } else {
+            String::from_utf8_lossy(data).to_string()
+        };
         let msg = StoredMessage {
             id: hash,
             from: from.to_string(),
@@ -113,6 +136,9 @@ impl MailStore {
             let user = extract_username(recipient);
             if let Some(acc) = self.accounts.iter_mut().find(|a| a.name.eq_ignore_ascii_case(&user)) {
                 acc.messages.push(msg.clone());
+                if acc.messages.len() > MAX_MESSAGES {
+                    acc.messages.remove(0);
+                }
                 matched = true;
             }
         }
@@ -120,6 +146,9 @@ impl MailStore {
             let default_name = to.first().map(|r| extract_username(r)).unwrap_or_else(|| "inbox".to_string());
             if let Some(acc) = self.accounts.iter_mut().find(|a| a.name.eq_ignore_ascii_case(&default_name)) {
                 acc.messages.push(msg);
+                if acc.messages.len() > MAX_MESSAGES {
+                    acc.messages.remove(0);
+                }
             } else {
                 self.accounts.push(Account {
                     name: default_name,
@@ -134,6 +163,7 @@ impl MailStore {
 }
 
 pub fn save_account(dir: &Path, name: &str, password: &str, no_reply: bool) -> io::Result<()> {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     std::fs::create_dir_all(dir)?;
     let mut store = MailStore::load_from_dir(dir);
     store.add_or_update(name, password, no_reply);
@@ -187,6 +217,7 @@ async fn persist(
         #[cfg(unix)]
         std::fs::File::open(&*dir)?.sync_all()?;
 
+        let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let mut store = MailStore::load_from_dir(&dir);
         store.record_message(&from, &to, &data);
         let _ = store.save_to_dir(&dir);
