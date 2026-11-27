@@ -6,8 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 const WINDOW: Duration = Duration::from_secs(60);
-const SHARDS: usize = 64;
-const SLOTS: usize = 1024;
+const SHARDS: usize = 16;
+const SLOTS: usize = 256;
 struct Bucket {
     start: Instant,
     used: u32,

@@ -110,6 +110,8 @@ impl Catalog {
                 }
             }
         }
+        c.files.shrink_to_fit();
+        c.dirs.shrink_to_fit();
         Ok(c)
     }
     fn scan(&mut self, dir: &Dir, prefix: &str, depth: u8, cfg: &Config) -> Result<()> {
@@ -356,7 +358,7 @@ pub async fn serve(
         if start > 0 && f.seek(SeekFrom::Start(start)).await.is_err() {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        *r.body_mut() = Body::from_stream(ReaderStream::with_capacity(f.take(count), 64 * 1024));
+        *r.body_mut() = Body::from_stream(ReaderStream::with_capacity(f.take(count), 16 * 1024));
     }
     r
 }

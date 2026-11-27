@@ -74,8 +74,8 @@ impl App {
             client: reqwest::Client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
-                .pool_max_idle_per_host(4)
-                .pool_idle_timeout(Duration::from_secs(15))
+                .pool_max_idle_per_host(2)
+                .pool_idle_timeout(Duration::from_secs(10))
                 .connect_timeout(Duration::from_secs(5))
                 .build()?,
             reload: Mutex::new(()),
@@ -139,6 +139,10 @@ async fn dispatch(
     hdr.insert(
         HeaderName::from_static("cross-origin-opener-policy"),
         HeaderValue::from_static("same-origin"),
+    );
+    hdr.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("geolocation=(), microphone=(), camera=()"),
     );
     if link.tls {
         hdr.insert(

@@ -71,10 +71,55 @@ fn add_email_acc(config_path: &Path, name: &str) -> Result<()> {
     Ok(())
 }
 
+fn read_rss_kb(pid: u32) -> Option<u64> {
+    let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+            return Some(kb);
+        }
+    }
+    None
+}
+
+fn print_status(path: &Path) {
+    let dir = config::Config::config_dir(path);
+    let is_pl = config::get_lang(&dir) == "pl";
+    match config::find_server_pid() {
+        Some(pid) => {
+            if is_pl {
+                println!("eafrei: działa (PID {pid})");
+            } else {
+                println!("eafrei: running (PID {pid})");
+            }
+            if let Some(kb) = read_rss_kb(pid) {
+                println!("RAM: {:.1} MB", kb as f64 / 1024.0);
+            }
+            if let Ok(cfg) = config::Config::load(path) {
+                println!("HTTP: http://{}:{}", cfg.web.bind, cfg.web.port);
+                if cfg.web.tls_port != 0 {
+                    println!("HTTPS: https://{}:{}", cfg.web.bind, cfg.web.tls_port);
+                }
+                if cfg.mail.enabled {
+                    println!("SMTP: {}:{}", cfg.mail.bind, cfg.mail.port);
+                }
+            }
+        }
+        None => {
+            if is_pl {
+                println!("eafrei: zatrzymany");
+            } else {
+                println!("eafrei: stopped");
+            }
+        }
+    }
+}
+
 enum Action {
     Serve(PathBuf),
     Check(PathBuf),
     Reload(PathBuf),
+    Status(PathBuf),
     SetLang(PathBuf, String),
     AddEmail(PathBuf, String),
 }
@@ -84,17 +129,20 @@ fn args() -> Result<Option<Action>> {
     let mut explicit = None;
     let mut check = false;
     let mut reload = false;
+    let mut status = false;
     let mut set_lang = None;
     let mut add_email = None;
     while let Some(arg) = args.next() {
-        if arg == "--config" {
+        if arg == "config" {
             explicit = Some(PathBuf::from(
-                args.next().context("--config requires a path")?,
+                args.next().context("config requires a path")?,
             ));
-        } else if arg == "--check" || arg == "check" {
+        } else if arg == "check" {
             check = true;
         } else if arg == "reload" {
             reload = true;
+        } else if arg == "status" {
+            status = true;
         } else if arg == "set-lang" {
             let l = args.next().context("missing language code (pl or en)")?;
             let ls = l.to_str().context("invalid language code")?;
@@ -102,16 +150,16 @@ fn args() -> Result<Option<Action>> {
                 bail!("unsupported language: {ls}. Supported: pl, en");
             }
             set_lang = Some(ls.to_string());
-        } else if arg == "--version" {
+        } else if arg == "version" {
             println!("eafrei {}", env!("CARGO_PKG_VERSION"));
             return Ok(None);
-        } else if arg == "--help" || arg == "-h" {
+        } else if arg == "help" || arg == "-h" {
             let default_dir = Path::new("config");
             let lang = config::get_lang(default_dir);
             if lang == "pl" {
-                println!("eafrei [--config KATALOG] [--check]\neafrei check\neafrei reload\neafrei set-lang [pl|en]\neafrei add email-acc <nazwa>\nKonfiguracja: --config > EAFREI_CONFIG > /etc/eafrei > config");
+                println!("eafrei [config KATALOG]\neafrei check\neafrei reload\neafrei status\neafrei set-lang [pl|en]\neafrei add email-acc <nazwa>\neafrei help\neafrei version\nKonfiguracja: config > EAFREI_CONFIG > /etc/eafrei > config");
             } else {
-                println!("eafrei [--config DIR] [--check]\neafrei check\neafrei reload\neafrei set-lang [pl|en]\neafrei add email-acc <name>\nConfig: --config > EAFREI_CONFIG > /etc/eafrei > config");
+                println!("eafrei [config DIR]\neafrei check\neafrei reload\neafrei status\neafrei set-lang [pl|en]\neafrei add email-acc <name>\neafrei help\neafrei version\nConfig: config > EAFREI_CONFIG > /etc/eafrei > config");
             }
             return Ok(None);
         } else if arg == "add" {
@@ -154,6 +202,9 @@ fn args() -> Result<Option<Action>> {
     if reload {
         return Ok(Some(Action::Reload(abs_path)));
     }
+    if status {
+        return Ok(Some(Action::Status(abs_path)));
+    }
     if check {
         Ok(Some(Action::Check(abs_path)))
     } else {
@@ -193,8 +244,7 @@ impl Drop for PidFileGuard {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let Some(action) = args()? else {
         return Ok(());
     };
@@ -252,7 +302,21 @@ async fn main() -> Result<()> {
                 bail!("reload is not supported on this platform");
             }
         }
+        Action::Status(path) => {
+            print_status(&path);
+            return Ok(());
+        }
         Action::Serve(path) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .max_blocking_threads(4)
+                .build()?;
+            rt.block_on(serve(path))
+        }
+    }
+}
+
+async fn serve(path: PathBuf) -> Result<()> {
             let _ = rustls::crypto::ring::default_provider().install_default();
             let site = Snapshot::load(&path).with_context(|| format!("load {}", path.display()))?;
             let cfg = site.cfg.clone();
@@ -300,6 +364,11 @@ async fn main() -> Result<()> {
                 }
             }
             let _ = fs::write("/tmp/eafrei.pid", std::process::id().to_string());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions("/tmp/eafrei.pid", fs::Permissions::from_mode(0o600));
+            }
             let _pid_guard = PidFileGuard;
             let mut jobs = JoinSet::<Result<()>>::new();
             let mut handles = Vec::new();
@@ -347,6 +416,4 @@ async fn main() -> Result<()> {
                 job??;
             }
             Ok(())
-        }
-    }
 }

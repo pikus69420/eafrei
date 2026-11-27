@@ -14,8 +14,8 @@ use tokio::{
 
 const LINE: usize = 1000;
 const MAX: usize = 1024 * 1024;
-const MAX_MESSAGES: usize = 100;
-const MAX_DATA: usize = 65536;
+const MAX_MESSAGES: usize = 50;
+const MAX_DATA: usize = 32768;
 
 static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -102,13 +102,14 @@ impl MailStore {
 
     pub fn add_or_update(&mut self, name: &str, password: &str, no_reply: bool) {
         let now = current_timestamp();
+        let hashed = format!("blake3:{}", blake3::hash(password.as_bytes()).to_hex());
         if let Some(acc) = self.accounts.iter_mut().find(|a| a.name.eq_ignore_ascii_case(name)) {
-            acc.password = password.to_string();
+            acc.password = hashed;
             acc.no_reply = no_reply;
         } else {
             self.accounts.push(Account {
                 name: name.to_string(),
-                password: password.to_string(),
+                password: hashed,
                 no_reply,
                 created_at: now,
                 messages: Vec::new(),
@@ -239,8 +240,8 @@ fn mailbox(arg: &str, null_ok: bool) -> bool {
 
 async fn session(sock: TcpStream, dir: Arc<PathBuf>) -> io::Result<()> {
     let (r, mut w) = sock.into_split();
-    let mut r = BufReader::new(r);
-    let mut buf = Vec::new();
+    let mut r = BufReader::with_capacity(2048, r);
+    let mut buf = Vec::with_capacity(256);
     let mut hello = false;
     let mut from = None::<String>;
     let mut to = Vec::<String>::new();

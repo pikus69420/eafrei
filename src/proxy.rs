@@ -71,6 +71,9 @@ pub async fn forward(
     let i = counter.fetch_add(1, Ordering::Relaxed) % cfg.upstreams.len();
     let (mut parts, body) = req.into_parts();
     let path = parts.uri.path_and_query().map_or("/", |p| p.as_str());
+    if !path.starts_with('/') {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
     let url = format!("{}{path}", cfg.upstreams[i]);
     let original_host =
         host(&parts.uri, &parts.headers).and_then(|s| HeaderValue::from_str(s).ok());

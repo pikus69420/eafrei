@@ -219,6 +219,8 @@ fn parse_headers(buf: &[u8]) -> Result<(StatusCode, HeaderMap), StatusCode> {
         }
     }
     proxy::strip_hop(&mut hdr);
+    hdr.remove("x-powered-by");
+    hdr.remove(h::SERVER);
     let code = status.unwrap_or(if hdr.contains_key(h::LOCATION) {
         StatusCode::FOUND
     } else {
